@@ -28,6 +28,36 @@ function pixelsEqual(first, second) {
   return first.length === second.length && first.every((pixel, index) => pixel === second[index])
 }
 
+function lineIndexes(fromIndex, toIndex, size) {
+  const points = []
+  let x = fromIndex % size
+  let y = Math.floor(fromIndex / size)
+  const endX = toIndex % size
+  const endY = Math.floor(toIndex / size)
+  const stepX = x < endX ? 1 : -1
+  const stepY = y < endY ? 1 : -1
+  const deltaX = Math.abs(endX - x)
+  const deltaY = -Math.abs(endY - y)
+  let error = deltaX + deltaY
+
+  while (true) {
+    points.push(y * size + x)
+    if (x === endX && y === endY) break
+
+    const nextError = 2 * error
+    if (nextError >= deltaY) {
+      error += deltaY
+      x += stepX
+    }
+    if (nextError <= deltaX) {
+      error += deltaX
+      y += stepY
+    }
+  }
+
+  return points
+}
+
 function App() {
   const [size, setSize] = useState(DEFAULT_SIZE)
   const [pixels, setPixels] = useState(() => createPixels(DEFAULT_SIZE))
@@ -233,14 +263,22 @@ function App() {
 
   function paintStrokeAt(index) {
     if (lastPaintIndexRef.current === index) return
-    lastPaintIndexRef.current = index
+    const indexes =
+      lastPaintIndexRef.current === null
+        ? [index]
+        : lineIndexes(lastPaintIndexRef.current, index, size)
 
     setPixels((current) => {
-      const nextPixels = paintOnPixels(current, index)
+      const nextPixels = indexes.reduce(
+        (next, pixelIndex) => paintOnPixels(next, pixelIndex),
+        current,
+      )
       if (pixelsEqual(current, nextPixels)) return current
       pixelsRef.current = nextPixels
       return nextPixels
     })
+
+    lastPaintIndexRef.current = index
   }
 
   function undo() {
