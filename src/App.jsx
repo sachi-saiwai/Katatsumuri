@@ -58,6 +58,14 @@ function lineIndexes(fromIndex, toIndex, size) {
   return points
 }
 
+function pointToPixelIndex(clientX, clientY, element, size) {
+  const rect = element.getBoundingClientRect()
+  const x = clamp(Math.floor(((clientX - rect.left) / rect.width) * size), 0, size - 1)
+  const y = clamp(Math.floor(((clientY - rect.top) / rect.height) * size), 0, size - 1)
+
+  return y * size + x
+}
+
 function App() {
   const [size, setSize] = useState(DEFAULT_SIZE)
   const [pixels, setPixels] = useState(() => createPixels(DEFAULT_SIZE))
@@ -236,29 +244,31 @@ function App() {
     if (changed) remember(nextPixels)
   }
 
-  function handlePointerDown(index) {
+  function handleCanvasPointerDown(event) {
+    const index = pointToPixelIndex(event.clientX, event.clientY, event.currentTarget, size)
+
     if (tool === 'fill' || tool === 'picker') {
       drawAt(index)
       return
     }
 
+    event.currentTarget.setPointerCapture(event.pointerId)
     strokeStartRef.current = pixelsRef.current
     paintStrokeAt(index)
     setIsDrawing(true)
   }
 
-  function handlePointerEnter(index) {
-    if (!isDrawing || tool === 'fill' || tool === 'picker') return
-    paintStrokeAt(index)
-  }
-
   function handleCanvasPointerMove(event) {
     if (!isDrawing || tool === 'fill' || tool === 'picker') return
 
-    const rect = event.currentTarget.getBoundingClientRect()
-    const x = clamp(Math.floor(((event.clientX - rect.left) / rect.width) * size), 0, size - 1)
-    const y = clamp(Math.floor(((event.clientY - rect.top) / rect.height) * size), 0, size - 1)
-    paintStrokeAt(y * size + x)
+    const events =
+      typeof event.nativeEvent.getCoalescedEvents === 'function'
+        ? event.nativeEvent.getCoalescedEvents()
+        : [event.nativeEvent]
+
+    for (const pointerEvent of events) {
+      paintStrokeAt(pointToPixelIndex(pointerEvent.clientX, pointerEvent.clientY, event.currentTarget, size))
+    }
   }
 
   function paintStrokeAt(index) {
@@ -491,6 +501,7 @@ function App() {
           <div
             className={`pixel-canvas ${showGrid ? 'show-grid' : ''}`}
             style={{ '--size': size }}
+            onPointerDown={handleCanvasPointerDown}
             onPointerMove={handleCanvasPointerMove}
             onPointerLeave={finishStroke}
           >
@@ -500,8 +511,6 @@ function App() {
                 className={pixel === TRANSPARENT ? 'pixel empty' : 'pixel'}
                 style={{ '--pixel-color': pixel }}
                 type="button"
-                onPointerDown={() => handlePointerDown(index)}
-                onPointerEnter={() => handlePointerEnter(index)}
                 aria-label={`${index % size}, ${Math.floor(index / size)}`}
               />
             ))}
