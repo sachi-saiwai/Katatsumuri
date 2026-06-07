@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import './App.css'
 
 const SIZES = [16, 24, 32, 48, 64, 96]
@@ -24,9 +24,16 @@ function clamp(value, min, max) {
   return Math.max(min, Math.min(max, value))
 }
 
+function pixelsEqual(first, second) {
+  return first.length === second.length && first.every((pixel, index) => pixel === second[index])
+}
+
 function App() {
   const [size, setSize] = useState(DEFAULT_SIZE)
   const [pixels, setPixels] = useState(() => createPixels(DEFAULT_SIZE))
+  const pixelsRef = useRef(pixels)
+  const strokeStartRef = useRef(null)
+  const lastPaintIndexRef = useRef(null)
   const [history, setHistory] = useState([])
   const [future, setFuture] = useState([])
   const [tool, setTool] = useState('pencil')
@@ -45,21 +52,42 @@ function App() {
     [pixels],
   )
 
+  const finishStroke = useCallback(() => {
+    setIsDrawing(false)
+
+    if (!strokeStartRef.current) return
+
+    const startPixels = strokeStartRef.current
+    const currentPixels = pixelsRef.current
+    strokeStartRef.current = null
+    lastPaintIndexRef.current = null
+
+    if (pixelsEqual(startPixels, currentPixels)) return
+
+    setHistory((items) => [...items.slice(-39), startPixels])
+    setFuture([])
+  }, [])
+
   useEffect(() => {
-    const stopDrawing = () => setIsDrawing(false)
+    pixelsRef.current = pixels
+  }, [pixels])
+
+  useEffect(() => {
+    const stopDrawing = () => finishStroke()
     window.addEventListener('pointerup', stopDrawing)
     window.addEventListener('pointercancel', stopDrawing)
     return () => {
       window.removeEventListener('pointerup', stopDrawing)
       window.removeEventListener('pointercancel', stopDrawing)
     }
-  }, [])
+  }, [finishStroke])
 
   function remember(nextPixels) {
     setPixels((current) => {
-      if (current === nextPixels || current.every((pixel, index) => pixel === nextPixels[index])) {
+      if (current === nextPixels || pixelsEqual(current, nextPixels)) {
         return current
       }
+      pixelsRef.current = nextPixels
       setHistory((items) => [...items.slice(-39), current])
       setFuture([])
       return nextPixels
@@ -111,12 +139,26 @@ function App() {
     return [...points.values()]
   }
 
+  function paintOnPixels(sourcePixels, index, forceTool = tool) {
+    const x = index % size
+    const y = Math.floor(index / size)
+    const nextColor = forceTool === 'eraser' ? TRANSPARENT : color
+    const nextPixels = [...sourcePixels]
+
+    for (const pixelIndex of brushPoints(x, y)) {
+      nextPixels[pixelIndex] = nextColor
+    }
+
+    return nextPixels
+  }
+
   function drawAt(index, forceTool = tool) {
     const x = index % size
     const y = Math.floor(index / size)
+    const currentPixels = pixelsRef.current
 
     if (forceTool === 'picker') {
-      const picked = pixels[index]
+      const picked = currentPixels[index]
       if (picked !== TRANSPARENT) chooseColor(picked)
       setTool('pencil')
       return
@@ -127,12 +169,7 @@ function App() {
       return
     }
 
-    const nextColor = forceTool === 'eraser' ? TRANSPARENT : color
-    const nextPixels = [...pixels]
-    for (const pixelIndex of brushPoints(x, y)) {
-      nextPixels[pixelIndex] = nextColor
-    }
-    remember(nextPixels)
+    remember(paintOnPixels(currentPixels, index, forceTool))
   }
 
   function fillAt(startX, startY) {
@@ -170,13 +207,40 @@ function App() {
   }
 
   function handlePointerDown(index) {
+    if (tool === 'fill' || tool === 'picker') {
+      drawAt(index)
+      return
+    }
+
+    strokeStartRef.current = pixelsRef.current
+    paintStrokeAt(index)
     setIsDrawing(true)
-    drawAt(index)
   }
 
   function handlePointerEnter(index) {
     if (!isDrawing || tool === 'fill' || tool === 'picker') return
-    drawAt(index)
+    paintStrokeAt(index)
+  }
+
+  function handleCanvasPointerMove(event) {
+    if (!isDrawing || tool === 'fill' || tool === 'picker') return
+
+    const rect = event.currentTarget.getBoundingClientRect()
+    const x = clamp(Math.floor(((event.clientX - rect.left) / rect.width) * size), 0, size - 1)
+    const y = clamp(Math.floor(((event.clientY - rect.top) / rect.height) * size), 0, size - 1)
+    paintStrokeAt(y * size + x)
+  }
+
+  function paintStrokeAt(index) {
+    if (lastPaintIndexRef.current === index) return
+    lastPaintIndexRef.current = index
+
+    setPixels((current) => {
+      const nextPixels = paintOnPixels(current, index)
+      if (pixelsEqual(current, nextPixels)) return current
+      pixelsRef.current = nextPixels
+      return nextPixels
+    })
   }
 
   function undo() {
@@ -184,6 +248,7 @@ function App() {
       if (!items.length) return items
       const previous = items.at(-1)
       setFuture((futureItems) => [pixels, ...futureItems])
+      pixelsRef.current = previous
       setPixels(previous)
       return items.slice(0, -1)
     })
@@ -194,6 +259,7 @@ function App() {
       if (!items.length) return items
       const [next, ...rest] = items
       setHistory((historyItems) => [...historyItems, pixels])
+      pixelsRef.current = next
       setPixels(next)
       return rest
     })
@@ -204,8 +270,12 @@ function App() {
   }
 
   function resizeCanvas(nextSize) {
+    const nextPixels = createPixels(nextSize)
     setSize(nextSize)
-    setPixels(createPixels(nextSize))
+    pixelsRef.current = nextPixels
+    strokeStartRef.current = null
+    lastPaintIndexRef.current = null
+    setPixels(nextPixels)
     setHistory([])
     setFuture([])
   }
@@ -383,7 +453,8 @@ function App() {
           <div
             className={`pixel-canvas ${showGrid ? 'show-grid' : ''}`}
             style={{ '--size': size }}
-            onPointerLeave={() => setIsDrawing(false)}
+            onPointerMove={handleCanvasPointerMove}
+            onPointerLeave={finishStroke}
           >
             {pixels.map((pixel, index) => (
               <button
