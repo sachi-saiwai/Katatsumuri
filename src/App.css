@@ -329,6 +329,9 @@ button.active,
   background-size: 18px 18px;
   box-shadow: var(--canvas-shadow);
   touch-action: none;
+  user-select: none;
+  -webkit-user-select: none;
+  -webkit-touch-callout: none;
 }
 
 .pixel {
@@ -341,6 +344,7 @@ button.active,
   border-radius: 0;
   background: var(--pixel-color);
   box-shadow: none;
+  pointer-events: none;
   touch-action: none;
 }
 

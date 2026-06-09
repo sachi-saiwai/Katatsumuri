@@ -72,6 +72,8 @@ function App() {
   const pixelsRef = useRef(pixels)
   const strokeStartRef = useRef(null)
   const lastPaintIndexRef = useRef(null)
+  const activePointerIdRef = useRef(null)
+  const isDrawingRef = useRef(false)
   const [history, setHistory] = useState([])
   const [future, setFuture] = useState([])
   const [tool, setTool] = useState('pencil')
@@ -83,7 +85,6 @@ function App() {
   const [showGrid, setShowGrid] = useState(true)
   const [mirrorX, setMirrorX] = useState(false)
   const [mirrorY, setMirrorY] = useState(false)
-  const [isDrawing, setIsDrawing] = useState(false)
 
   const filledCount = useMemo(
     () => pixels.filter((pixel) => pixel !== TRANSPARENT).length,
@@ -91,7 +92,8 @@ function App() {
   )
 
   const finishStroke = useCallback(() => {
-    setIsDrawing(false)
+    activePointerIdRef.current = null
+    isDrawingRef.current = false
 
     if (!strokeStartRef.current) return
 
@@ -245,6 +247,9 @@ function App() {
   }
 
   function handleCanvasPointerDown(event) {
+    if (activePointerIdRef.current !== null) return
+
+    event.preventDefault()
     const index = pointToPixelIndex(event.clientX, event.clientY, event.currentTarget, size)
 
     if (tool === 'fill' || tool === 'picker') {
@@ -253,13 +258,16 @@ function App() {
     }
 
     event.currentTarget.setPointerCapture(event.pointerId)
+    activePointerIdRef.current = event.pointerId
+    isDrawingRef.current = true
     strokeStartRef.current = pixelsRef.current
     paintStrokeAt(index)
-    setIsDrawing(true)
   }
 
   function handleCanvasPointerMove(event) {
-    if (!isDrawing || tool === 'fill' || tool === 'picker') return
+    if (!isDrawingRef.current || activePointerIdRef.current !== event.pointerId || tool === 'fill' || tool === 'picker') return
+
+    event.preventDefault()
 
     const events =
       typeof event.nativeEvent.getCoalescedEvents === 'function'
@@ -269,6 +277,13 @@ function App() {
     for (const pointerEvent of events) {
       paintStrokeAt(pointToPixelIndex(pointerEvent.clientX, pointerEvent.clientY, event.currentTarget, size))
     }
+  }
+
+  function handleCanvasPointerUp(event) {
+    if (activePointerIdRef.current !== event.pointerId) return
+
+    event.preventDefault()
+    finishStroke()
   }
 
   function paintStrokeAt(index) {
@@ -503,7 +518,9 @@ function App() {
             style={{ '--size': size }}
             onPointerDown={handleCanvasPointerDown}
             onPointerMove={handleCanvasPointerMove}
-            onPointerLeave={finishStroke}
+            onPointerUp={handleCanvasPointerUp}
+            onPointerCancel={finishStroke}
+            onLostPointerCapture={finishStroke}
           >
             {pixels.map((pixel, index) => (
               <button
