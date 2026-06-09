@@ -15,6 +15,7 @@ const STARTING_PALETTE = [
   '#9c6bff',
   '#ffffff',
 ]
+const STARTING_HSV = hexToHsv(STARTING_COLOR)
 
 function createPixels(size) {
   return Array.from({ length: size * size }, () => TRANSPARENT)
@@ -26,6 +27,86 @@ function clamp(value, min, max) {
 
 function pixelsEqual(first, second) {
   return first.length === second.length && first.every((pixel, index) => pixel === second[index])
+}
+
+function componentToHex(value) {
+  return clamp(Math.round(value), 0, 255).toString(16).padStart(2, '0')
+}
+
+function rgbToHex(red, green, blue) {
+  return `#${componentToHex(red)}${componentToHex(green)}${componentToHex(blue)}`
+}
+
+function hexToRgb(hex) {
+  const normalized = hex.replace('#', '')
+  if (!/^[0-9a-fA-F]{6}$/.test(normalized)) return null
+
+  return {
+    red: parseInt(normalized.slice(0, 2), 16),
+    green: parseInt(normalized.slice(2, 4), 16),
+    blue: parseInt(normalized.slice(4, 6), 16),
+  }
+}
+
+function hsvToHex({ hue, saturation, value }) {
+  const chroma = value * saturation
+  const huePrime = hue / 60
+  const x = chroma * (1 - Math.abs((huePrime % 2) - 1))
+  const match = value - chroma
+  let red = 0
+  let green = 0
+  let blue = 0
+
+  if (huePrime >= 0 && huePrime < 1) {
+    red = chroma
+    green = x
+  } else if (huePrime < 2) {
+    red = x
+    green = chroma
+  } else if (huePrime < 3) {
+    green = chroma
+    blue = x
+  } else if (huePrime < 4) {
+    green = x
+    blue = chroma
+  } else if (huePrime < 5) {
+    red = x
+    blue = chroma
+  } else {
+    red = chroma
+    blue = x
+  }
+
+  return rgbToHex((red + match) * 255, (green + match) * 255, (blue + match) * 255)
+}
+
+function hexToHsv(hex) {
+  const rgb = hexToRgb(hex)
+  if (!rgb) return { hue: 0, saturation: 0, value: 0 }
+
+  const red = rgb.red / 255
+  const green = rgb.green / 255
+  const blue = rgb.blue / 255
+  const max = Math.max(red, green, blue)
+  const min = Math.min(red, green, blue)
+  const delta = max - min
+  let hue = 0
+
+  if (delta !== 0) {
+    if (max === red) {
+      hue = 60 * (((green - blue) / delta) % 6)
+    } else if (max === green) {
+      hue = 60 * ((blue - red) / delta + 2)
+    } else {
+      hue = 60 * ((red - green) / delta + 4)
+    }
+  }
+
+  return {
+    hue: Math.round((hue + 360) % 360),
+    saturation: max === 0 ? 0 : delta / max,
+    value: max,
+  }
 }
 
 function lineIndexes(fromIndex, toIndex, size) {
@@ -66,6 +147,15 @@ function pointToPixelIndex(clientX, clientY, element, size) {
   return y * size + x
 }
 
+function pointToColorField(clientX, clientY, element) {
+  const rect = element.getBoundingClientRect()
+
+  return {
+    saturation: clamp((clientX - rect.left) / rect.width, 0, 1),
+    value: clamp(1 - (clientY - rect.top) / rect.height, 0, 1),
+  }
+}
+
 function App() {
   const [size, setSize] = useState(DEFAULT_SIZE)
   const [pixels, setPixels] = useState(() => createPixels(DEFAULT_SIZE))
@@ -74,11 +164,15 @@ function App() {
   const lastPaintIndexRef = useRef(null)
   const activePointerIdRef = useRef(null)
   const isDrawingRef = useRef(false)
+  const activeColorPointerIdRef = useRef(null)
+  const colorPanelRef = useRef(null)
   const [history, setHistory] = useState([])
   const [future, setFuture] = useState([])
   const [tool, setTool] = useState('pencil')
   const [color, setColor] = useState(STARTING_COLOR)
   const [colorDraft, setColorDraft] = useState(STARTING_COLOR)
+  const [hsv, setHsv] = useState(STARTING_HSV)
+  const [isColorPickerOpen, setIsColorPickerOpen] = useState(false)
   const [recentColors, setRecentColors] = useState([STARTING_COLOR])
   const [palette, setPalette] = useState(STARTING_PALETTE)
   const [brushSize, setBrushSize] = useState(1)
@@ -122,6 +216,26 @@ function App() {
     }
   }, [finishStroke])
 
+  useEffect(() => {
+    if (!isColorPickerOpen) return undefined
+
+    function closeColorPicker(event) {
+      if (colorPanelRef.current?.contains(event.target)) return
+      setIsColorPickerOpen(false)
+    }
+
+    function closeColorPickerWithKey(event) {
+      if (event.key === 'Escape') setIsColorPickerOpen(false)
+    }
+
+    window.addEventListener('pointerdown', closeColorPicker)
+    window.addEventListener('keydown', closeColorPickerWithKey)
+    return () => {
+      window.removeEventListener('pointerdown', closeColorPicker)
+      window.removeEventListener('keydown', closeColorPickerWithKey)
+    }
+  }, [isColorPickerOpen])
+
   function remember(nextPixels) {
     setPixels((current) => {
       if (current === nextPixels || pixelsEqual(current, nextPixels)) {
@@ -134,10 +248,24 @@ function App() {
     })
   }
 
-  function chooseColor(nextColor) {
+  function chooseColor(nextColor, { rememberColor = true, syncHsv = true } = {}) {
     setColor(nextColor)
     setColorDraft(nextColor)
-    setRecentColors((items) => [nextColor, ...items.filter((item) => item !== nextColor)].slice(0, 4))
+    if (syncHsv) setHsv(hexToHsv(nextColor))
+    if (rememberColor) {
+      setRecentColors((items) => [nextColor, ...items.filter((item) => item !== nextColor)].slice(0, 4))
+    }
+  }
+
+  function chooseHsv(nextHsv, { rememberColor = false } = {}) {
+    const normalized = {
+      hue: clamp(Number(nextHsv.hue), 0, 359),
+      saturation: clamp(Number(nextHsv.saturation), 0, 1),
+      value: clamp(Number(nextHsv.value), 0, 1),
+    }
+
+    setHsv(normalized)
+    chooseColor(hsvToHex(normalized), { rememberColor, syncHsv: false })
   }
 
   function handleHexColorChange(value) {
@@ -146,6 +274,45 @@ function App() {
     if (/^#[0-9a-fA-F]{6}$/.test(normalized)) {
       chooseColor(normalized)
     }
+  }
+
+  function handleHueChange(value) {
+    chooseHsv({ ...hsv, hue: Number(value) })
+  }
+
+  function handleSaturationChange(value) {
+    chooseHsv({ ...hsv, saturation: Number(value) / 100 })
+  }
+
+  function handleValueChange(value) {
+    chooseHsv({ ...hsv, value: Number(value) / 100 })
+  }
+
+  function handleColorFieldPointerDown(event) {
+    event.preventDefault()
+    activeColorPointerIdRef.current = event.pointerId
+    event.currentTarget.setPointerCapture(event.pointerId)
+    chooseHsv({
+      ...hsv,
+      ...pointToColorField(event.clientX, event.clientY, event.currentTarget),
+    })
+  }
+
+  function handleColorFieldPointerMove(event) {
+    if (activeColorPointerIdRef.current !== event.pointerId) return
+
+    event.preventDefault()
+    chooseHsv({
+      ...hsv,
+      ...pointToColorField(event.clientX, event.clientY, event.currentTarget),
+    })
+  }
+
+  function handleColorFieldPointerEnd(event) {
+    if (activeColorPointerIdRef.current !== event.pointerId) return
+
+    activeColorPointerIdRef.current = null
+    chooseColor(color)
   }
 
   function mirroredPoints(x, y) {
@@ -405,10 +572,17 @@ function App() {
             </div>
           </div>
 
-          <div className="panel-group">
+          <div className="panel-group color-panel" ref={colorPanelRef}>
             <p className="panel-label">色</p>
             <div className="color-control">
-              <input type="color" value={color} onChange={(event) => chooseColor(event.target.value)} aria-label="描画色" />
+              <button
+                className="current-color"
+                type="button"
+                style={{ '--swatch': color }}
+                aria-label={`カラーパレットを${isColorPickerOpen ? '閉じる' : '開く'} ${color}`}
+                aria-expanded={isColorPickerOpen}
+                onClick={() => setIsColorPickerOpen((current) => !current)}
+              />
               <input
                 className="hex-input"
                 type="text"
@@ -420,6 +594,67 @@ function App() {
               />
               <button type="button" onClick={addPaletteColor}>保存</button>
             </div>
+            {isColorPickerOpen && (
+              <div className="color-picker" role="dialog" aria-label="カラーパレット">
+                <div
+                  className="color-field"
+                  style={{
+                    '--picker-hue': hsv.hue,
+                    '--picker-saturation': `${hsv.saturation * 100}%`,
+                    '--picker-value': `${(1 - hsv.value) * 100}%`,
+                  }}
+                  role="slider"
+                  tabIndex="0"
+                  aria-label="彩度と明度"
+                  aria-valuetext={`彩度 ${Math.round(hsv.saturation * 100)}%, 明度 ${Math.round(hsv.value * 100)}%`}
+                  onPointerDown={handleColorFieldPointerDown}
+                  onPointerMove={handleColorFieldPointerMove}
+                  onPointerUp={handleColorFieldPointerEnd}
+                  onPointerCancel={handleColorFieldPointerEnd}
+                  onLostPointerCapture={() => {
+                    activeColorPointerIdRef.current = null
+                  }}
+                >
+                  <span className="color-field-thumb" />
+                </div>
+                <label className="color-slider hue-slider">
+                  <span>H</span>
+                  <input
+                    type="range"
+                    min="0"
+                    max="359"
+                    value={Math.round(hsv.hue)}
+                    onInput={(event) => handleHueChange(event.currentTarget.value)}
+                    onChange={(event) => handleHueChange(event.currentTarget.value)}
+                    aria-label="色相"
+                  />
+                </label>
+                <label className="color-slider saturation-slider" style={{ '--picker-color': hsvToHex({ ...hsv, saturation: 1 }) }}>
+                  <span>S</span>
+                  <input
+                    type="range"
+                    min="0"
+                    max="100"
+                    value={Math.round(hsv.saturation * 100)}
+                    onInput={(event) => handleSaturationChange(event.currentTarget.value)}
+                    onChange={(event) => handleSaturationChange(event.currentTarget.value)}
+                    aria-label="彩度"
+                  />
+                </label>
+                <label className="color-slider value-slider" style={{ '--picker-color': hsvToHex({ ...hsv, value: 1 }) }}>
+                  <span>V</span>
+                  <input
+                    type="range"
+                    min="0"
+                    max="100"
+                    value={Math.round(hsv.value * 100)}
+                    onInput={(event) => handleValueChange(event.currentTarget.value)}
+                    onChange={(event) => handleValueChange(event.currentTarget.value)}
+                    aria-label="明度"
+                  />
+                </label>
+              </div>
+            )}
             <div className="history-group">
               <span>履歴</span>
               <div className="color-history" aria-label="直近の色">
