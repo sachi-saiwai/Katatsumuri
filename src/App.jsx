@@ -3,6 +3,7 @@ import './App.css'
 
 const SIZES = [16, 24, 32, 48, 64, 96]
 const DEFAULT_SIZE = 32
+const MAX_LAYERS = 3
 const TRANSPARENT = 'transparent'
 const STARTING_COLOR = '#25324d'
 const STARTING_PALETTE = [
@@ -21,12 +22,51 @@ function createPixels(size) {
   return Array.from({ length: size * size }, () => TRANSPARENT)
 }
 
+function createLayer(size, index = 0) {
+  return {
+    id: crypto.randomUUID(),
+    name: `Layer ${index + 1}`,
+    pixels: createPixels(size),
+    visible: true,
+  }
+}
+
+function createLayers(size) {
+  return [createLayer(size, 0)]
+}
+
 function clamp(value, min, max) {
   return Math.max(min, Math.min(max, value))
 }
 
 function pixelsEqual(first, second) {
   return first.length === second.length && first.every((pixel, index) => pixel === second[index])
+}
+
+function layersEqual(first, second) {
+  return (
+    first.length === second.length
+    && first.every((layer, index) => (
+      layer.id === second[index].id
+      && layer.name === second[index].name
+      && layer.visible === second[index].visible
+      && pixelsEqual(layer.pixels, second[index].pixels)
+    ))
+  )
+}
+
+function compositeLayers(layers, size) {
+  const pixels = createPixels(size)
+
+  for (const layer of layers) {
+    if (!layer.visible) continue
+
+    layer.pixels.forEach((pixel, index) => {
+      if (pixel !== TRANSPARENT) pixels[index] = pixel
+    })
+  }
+
+  return pixels
 }
 
 function componentToHex(value) {
@@ -156,16 +196,58 @@ function pointToColorField(clientX, clientY, element) {
   }
 }
 
+function loadImageFromFile(file) {
+  return new Promise((resolve, reject) => {
+    const image = new Image()
+    const url = URL.createObjectURL(file)
+
+    image.onload = () => {
+      URL.revokeObjectURL(url)
+      resolve(image)
+    }
+    image.onerror = () => {
+      URL.revokeObjectURL(url)
+      reject(new Error('画像を読み込めませんでした'))
+    }
+    image.src = url
+  })
+}
+
+function imageToPixels(image, size) {
+  const canvas = document.createElement('canvas')
+  canvas.width = size
+  canvas.height = size
+  const context = canvas.getContext('2d', { willReadFrequently: true })
+  const sourceSize = Math.min(image.naturalWidth, image.naturalHeight)
+  const sourceX = (image.naturalWidth - sourceSize) / 2
+  const sourceY = (image.naturalHeight - sourceSize) / 2
+
+  context.imageSmoothingEnabled = true
+  context.imageSmoothingQuality = 'high'
+  context.clearRect(0, 0, size, size)
+  context.drawImage(image, sourceX, sourceY, sourceSize, sourceSize, 0, 0, size, size)
+
+  const { data } = context.getImageData(0, 0, size, size)
+  return Array.from({ length: size * size }, (_, index) => {
+    const offset = index * 4
+    if (data[offset + 3] < 32) return TRANSPARENT
+
+    return rgbToHex(data[offset], data[offset + 1], data[offset + 2])
+  })
+}
+
 function App() {
   const [size, setSize] = useState(DEFAULT_SIZE)
-  const [pixels, setPixels] = useState(() => createPixels(DEFAULT_SIZE))
-  const pixelsRef = useRef(pixels)
+  const [layers, setLayers] = useState(() => createLayers(DEFAULT_SIZE))
+  const layersRef = useRef(layers)
+  const [activeLayerIndex, setActiveLayerIndex] = useState(0)
   const strokeStartRef = useRef(null)
   const lastPaintIndexRef = useRef(null)
   const activePointerIdRef = useRef(null)
   const isDrawingRef = useRef(false)
   const activeColorPointerIdRef = useRef(null)
   const colorPanelRef = useRef(null)
+  const importInputRef = useRef(null)
   const [history, setHistory] = useState([])
   const [future, setFuture] = useState([])
   const [tool, setTool] = useState('pencil')
@@ -180,6 +262,8 @@ function App() {
   const [mirrorX, setMirrorX] = useState(false)
   const [mirrorY, setMirrorY] = useState(false)
 
+  const pixels = useMemo(() => compositeLayers(layers, size), [layers, size])
+
   const filledCount = useMemo(
     () => pixels.filter((pixel) => pixel !== TRANSPARENT).length,
     [pixels],
@@ -191,20 +275,20 @@ function App() {
 
     if (!strokeStartRef.current) return
 
-    const startPixels = strokeStartRef.current
-    const currentPixels = pixelsRef.current
+    const startLayers = strokeStartRef.current
+    const currentLayers = layersRef.current
     strokeStartRef.current = null
     lastPaintIndexRef.current = null
 
-    if (pixelsEqual(startPixels, currentPixels)) return
+    if (layersEqual(startLayers, currentLayers)) return
 
-    setHistory((items) => [...items.slice(-39), startPixels])
+    setHistory((items) => [...items.slice(-39), startLayers])
     setFuture([])
   }, [])
 
   useEffect(() => {
-    pixelsRef.current = pixels
-  }, [pixels])
+    layersRef.current = layers
+  }, [layers])
 
   useEffect(() => {
     const stopDrawing = () => finishStroke()
@@ -236,16 +320,38 @@ function App() {
     }
   }, [isColorPickerOpen])
 
-  function remember(nextPixels) {
-    setPixels((current) => {
-      if (current === nextPixels || pixelsEqual(current, nextPixels)) {
+  function remember(nextLayers) {
+    setLayers((current) => {
+      if (current === nextLayers || layersEqual(current, nextLayers)) {
         return current
       }
-      pixelsRef.current = nextPixels
+      layersRef.current = nextLayers
       setHistory((items) => [...items.slice(-39), current])
       setFuture([])
-      return nextPixels
+      return nextLayers
     })
+  }
+
+  function updateActiveLayerPixels(updater, { saveHistory = true } = {}) {
+    const sourceLayers = layersRef.current
+    const activeLayer = sourceLayers[activeLayerIndex]
+    if (!activeLayer) return sourceLayers
+
+    const nextPixels = updater(activeLayer.pixels)
+    if (pixelsEqual(activeLayer.pixels, nextPixels)) return sourceLayers
+
+    const nextLayers = sourceLayers.map((layer, index) => (
+      index === activeLayerIndex ? { ...layer, pixels: nextPixels } : layer
+    ))
+
+    if (saveHistory) {
+      remember(nextLayers)
+    } else {
+      layersRef.current = nextLayers
+      setLayers(nextLayers)
+    }
+
+    return nextLayers
   }
 
   function chooseColor(nextColor, { rememberColor = true, syncHsv = true } = {}) {
@@ -362,10 +468,9 @@ function App() {
   function drawAt(index, forceTool = tool) {
     const x = index % size
     const y = Math.floor(index / size)
-    const currentPixels = pixelsRef.current
 
     if (forceTool === 'picker') {
-      const picked = currentPixels[index]
+      const picked = compositeLayers(layersRef.current, size)[index]
       if (picked !== TRANSPARENT) chooseColor(picked)
       setTool('pencil')
       return
@@ -376,11 +481,15 @@ function App() {
       return
     }
 
-    remember(paintOnPixels(currentPixels, index, forceTool))
+    updateActiveLayerPixels((currentPixels) => paintOnPixels(currentPixels, index, forceTool))
   }
 
   function fillAt(startX, startY) {
-    const nextPixels = [...pixels]
+    const sourceLayers = layersRef.current
+    const activeLayer = sourceLayers[activeLayerIndex]
+    if (!activeLayer) return
+
+    const nextPixels = [...activeLayer.pixels]
     const replacement = color
     const seeds = mirroredPoints(startX, startY)
     let changed = false
@@ -410,7 +519,7 @@ function App() {
       }
     }
 
-    if (changed) remember(nextPixels)
+    if (changed) updateActiveLayerPixels(() => nextPixels)
   }
 
   function handleCanvasPointerDown(event) {
@@ -427,7 +536,7 @@ function App() {
     event.currentTarget.setPointerCapture(event.pointerId)
     activePointerIdRef.current = event.pointerId
     isDrawingRef.current = true
-    strokeStartRef.current = pixelsRef.current
+    strokeStartRef.current = layersRef.current
     paintStrokeAt(index)
   }
 
@@ -460,14 +569,21 @@ function App() {
         ? [index]
         : lineIndexes(lastPaintIndexRef.current, index, size)
 
-    setPixels((current) => {
+    setLayers((currentLayers) => {
+      const activeLayer = currentLayers[activeLayerIndex]
+      if (!activeLayer) return currentLayers
+
       const nextPixels = indexes.reduce(
         (next, pixelIndex) => paintOnPixels(next, pixelIndex),
-        current,
+        activeLayer.pixels,
       )
-      if (pixelsEqual(current, nextPixels)) return current
-      pixelsRef.current = nextPixels
-      return nextPixels
+      if (pixelsEqual(activeLayer.pixels, nextPixels)) return currentLayers
+
+      const nextLayers = currentLayers.map((layer, index) => (
+        index === activeLayerIndex ? { ...layer, pixels: nextPixels } : layer
+      ))
+      layersRef.current = nextLayers
+      return nextLayers
     })
 
     lastPaintIndexRef.current = index
@@ -477,9 +593,10 @@ function App() {
     setHistory((items) => {
       if (!items.length) return items
       const previous = items.at(-1)
-      setFuture((futureItems) => [pixels, ...futureItems])
-      pixelsRef.current = previous
-      setPixels(previous)
+      setFuture((futureItems) => [layers, ...futureItems])
+      layersRef.current = previous
+      setLayers(previous)
+      setActiveLayerIndex((index) => clamp(index, 0, previous.length - 1))
       return items.slice(0, -1)
     })
   }
@@ -488,26 +605,69 @@ function App() {
     setFuture((items) => {
       if (!items.length) return items
       const [next, ...rest] = items
-      setHistory((historyItems) => [...historyItems, pixels])
-      pixelsRef.current = next
-      setPixels(next)
+      setHistory((historyItems) => [...historyItems, layers])
+      layersRef.current = next
+      setLayers(next)
+      setActiveLayerIndex((index) => clamp(index, 0, next.length - 1))
       return rest
     })
   }
 
   function clearCanvas() {
-    remember(createPixels(size))
+    updateActiveLayerPixels(() => createPixels(size))
   }
 
   function resizeCanvas(nextSize) {
-    const nextPixels = createPixels(nextSize)
+    const nextLayers = createLayers(nextSize)
     setSize(nextSize)
-    pixelsRef.current = nextPixels
+    layersRef.current = nextLayers
     strokeStartRef.current = null
     lastPaintIndexRef.current = null
-    setPixels(nextPixels)
+    setLayers(nextLayers)
+    setActiveLayerIndex(0)
     setHistory([])
     setFuture([])
+  }
+
+  function addLayer() {
+    if (layers.length >= MAX_LAYERS) return
+
+    const nextLayers = [...layers, createLayer(size, layers.length)]
+    remember(nextLayers)
+    setActiveLayerIndex(nextLayers.length - 1)
+  }
+
+  function removeLayer(indexToRemove) {
+    if (layers.length <= 1) return
+
+    const nextLayers = layers.filter((_, index) => index !== indexToRemove)
+    remember(nextLayers)
+    setActiveLayerIndex((index) => clamp(index >= indexToRemove ? index - 1 : index, 0, nextLayers.length - 1))
+  }
+
+  function toggleLayerVisibility(indexToToggle) {
+    const nextLayers = layers.map((layer, index) => (
+      index === indexToToggle ? { ...layer, visible: !layer.visible } : layer
+    ))
+    remember(nextLayers)
+  }
+
+  async function importImage(file) {
+    if (!file?.type.startsWith('image/')) return
+
+    try {
+      const image = await loadImageFromFile(file)
+      const nextPixels = imageToPixels(image, size)
+      updateActiveLayerPixels(() => nextPixels)
+    } catch (error) {
+      console.error(error)
+    }
+  }
+
+  function handleImportImage(event) {
+    const [file] = event.target.files
+    importImage(file)
+    event.target.value = ''
   }
 
   function addPaletteColor() {
@@ -535,7 +695,7 @@ function App() {
       context.fillStyle = '#ffffff'
       context.fillRect(0, 0, canvas.width, canvas.height)
     }
-    pixels.forEach((pixel, index) => {
+    compositeLayers(layers, size).forEach((pixel, index) => {
       if (pixel === TRANSPARENT) return
       context.fillStyle = pixel
       context.fillRect((index % size) * scale, Math.floor(index / size) * scale, scale, scale)
@@ -770,9 +930,58 @@ function App() {
         </section>
 
         <aside className="action-panel" aria-label="操作">
+          <div className="import-panel">
+            <input
+              ref={importInputRef}
+              className="import-input"
+              type="file"
+              accept="image/*"
+              onChange={handleImportImage}
+              aria-label="画像をインポート"
+            />
+            <button type="button" onClick={() => importInputRef.current?.click()}>画像インポート</button>
+          </div>
+          <div className="layer-panel">
+            <div className="layer-header">
+              <p className="panel-label">レイヤー</p>
+              <button type="button" onClick={addLayer} disabled={layers.length >= MAX_LAYERS}>追加</button>
+            </div>
+            <div className="layer-list" aria-label="レイヤー一覧">
+              {layers.map((layer, index) => (
+                <div className={index === activeLayerIndex ? 'layer-row active' : 'layer-row'} key={layer.id}>
+                  <button
+                    className="layer-select"
+                    type="button"
+                    onClick={() => setActiveLayerIndex(index)}
+                    aria-label={`${layer.name} を選択`}
+                  >
+                    <span>{layer.name}</span>
+                    <span>{layer.pixels.filter((pixel) => pixel !== TRANSPARENT).length} px</span>
+                  </button>
+                  <button
+                    className={layer.visible ? 'layer-icon active' : 'layer-icon'}
+                    type="button"
+                    onClick={() => toggleLayerVisibility(index)}
+                    aria-label={`${layer.name} を${layer.visible ? '非表示' : '表示'}`}
+                  >
+                    {layer.visible ? '表示' : '非表示'}
+                  </button>
+                  <button
+                    className="layer-delete"
+                    type="button"
+                    onClick={() => removeLayer(index)}
+                    disabled={layers.length <= 1}
+                    aria-label={`${layer.name} を削除`}
+                  >
+                    削除
+                  </button>
+                </div>
+              ))}
+            </div>
+          </div>
           <button type="button" onClick={undo} disabled={!history.length}>Undo</button>
           <button type="button" onClick={redo} disabled={!future.length}>Redo</button>
-          <button type="button" onClick={clearCanvas}>クリア</button>
+          <button type="button" onClick={clearCanvas}>レイヤーをクリア</button>
           <button className="primary-action" type="button" onClick={() => exportPng({ transparent: true })}>透過で書き出し</button>
           <button className="primary-action" type="button" onClick={() => exportPng({ transparent: false })}>白背景で書き出し</button>
         </aside>

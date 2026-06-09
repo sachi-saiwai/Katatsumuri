@@ -509,6 +509,98 @@ button.active,
   background: var(--accent);
 }
 
+.import-panel {
+  display: grid;
+}
+
+.import-input {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip: rect(0 0 0 0);
+  clip-path: inset(50%);
+  white-space: nowrap;
+}
+
+.layer-panel {
+  display: grid;
+  gap: 10px;
+  padding-bottom: 8px;
+  border-bottom: 1px solid var(--border);
+}
+
+.layer-header {
+  display: grid;
+  grid-template-columns: 1fr 54px;
+  align-items: center;
+  gap: 8px;
+}
+
+.layer-header button {
+  min-height: 34px;
+  font-size: 13px;
+  font-weight: 700;
+}
+
+.layer-list {
+  display: grid;
+  gap: 8px;
+}
+
+.layer-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 56px 44px;
+  gap: 6px;
+  align-items: stretch;
+}
+
+.layer-row button {
+  min-height: 40px;
+  padding: 6px;
+  font-size: 12px;
+  font-weight: 700;
+  line-height: 1.15;
+}
+
+.layer-select {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  justify-items: start;
+  text-align: left;
+}
+
+.layer-select span {
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.layer-select span + span {
+  color: var(--muted);
+  font-family: var(--mono);
+  font-size: 11px;
+}
+
+.layer-row.active .layer-select {
+  border-color: var(--accent);
+  color: var(--accent-text);
+  background: var(--accent-soft);
+}
+
+.layer-icon {
+  color: var(--muted);
+}
+
+.layer-icon.active {
+  color: var(--text-h);
+}
+
+.layer-delete {
+  color: var(--danger-text);
+}
+
 .action-panel button {
   min-height: 44px;
   padding: 7px 8px;
@@ -538,6 +630,10 @@ button.active,
     display: grid;
     grid-template-columns: repeat(5, minmax(0, 1fr));
     border-width: 1px 0 0;
+  }
+
+  .layer-panel {
+    grid-column: 1 / -1;
   }
 
   .pixel-canvas {
